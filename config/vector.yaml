@@ -1,0 +1,38 @@
+sources:
+  docker_logs:
+    type: docker_logs
+    docker_host: unix:///var/run/docker.sock
+    exclude_containers:
+      - vector
+      - loki
+      - grafana
+      - prometheus
+      - node-exporter
+      - cadvisor
+      - trivy-host-scanner
+      - trivy-watcher
+    auto_partial_merge: true
+
+transforms:
+  normalize_logs:
+    type: remap
+    inputs: [docker_logs]
+    source: |
+      .host = get_hostname!()
+      if exists(.timestamp) && is_string(.timestamp) {
+        .timestamp = parse_timestamp!(.timestamp, format: "%+")
+      }
+
+sinks:
+  loki:
+    type: loki
+    inputs: [normalize_logs]
+    endpoint: http://loki:3100
+    encoding:
+      codec: json
+    labels:
+      container: "{{ container_name }}"
+      image: "{{ image }}"
+      stream: "{{ stream }}"
+      host: "{{ host }}"
+    remove_label_fields: true

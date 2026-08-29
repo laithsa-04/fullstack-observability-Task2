@@ -1,0 +1,131 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+    networks: [observability]
+
+  loki:
+    image: grafana/loki:3.5.1
+    container_name: loki
+    command: -config.file=/etc/loki/config.yml
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./config/loki.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+    restart: unless-stopped
+    networks: [observability]
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    container_name: grafana
+    ports:
+      - "9000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on: [prometheus, loki]
+    restart: unless-stopped
+    networks: [observability]
+
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    container_name: node-exporter
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/textfile
+    ports:
+      - "9100:9100"
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+      - security_textfile:/textfile:ro
+    restart: unless-stopped
+    networks: [observability]
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    container_name: cadvisor
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=10s
+    ports:
+      - "8085:8080"
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    restart: unless-stopped
+    networks: [observability]
+
+  vector:
+    image: timberio/vector:0.49.0-alpine
+    container_name: vector
+    command: ["--config", "/etc/vector/vector.yaml"]
+    volumes:
+      - ./config/vector.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [loki]
+    restart: unless-stopped
+    networks: [observability]
+
+  trivy-host-scanner:
+    build: ./trivy-host-scanner
+    container_name: trivy-host-scanner
+    environment:
+      SCAN_INTERVAL: "3600"
+      TRIVY_CACHE_DIR: /cache
+    volumes:
+      - /:/host:ro
+      - security_textfile:/textfile
+      - trivy_cache:/cache
+    restart: unless-stopped
+    networks: [observability]
+
+  trivy-watcher:
+    build: ./trivy-watcher
+    container_name: trivy-watcher
+    ports:
+      - "8090:8090"
+      - "8086:8086"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - trivy_watcher_cache:/root/.cache/trivy
+    environment:
+      TRIVY_TIMEOUT: "10m"
+      STARTUP_SCAN_EXISTING: "true"
+      MAX_RESULTS: "100"
+    depends_on: [prometheus]
+    restart: unless-stopped
+    networks: [observability]
+
+networks:
+  observability:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  loki_data:
+  grafana_data:
+  security_textfile:
+  trivy_cache:
+  trivy_watcher_cache:
